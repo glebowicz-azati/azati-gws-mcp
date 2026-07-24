@@ -1,0 +1,14 @@
+{
+	"mcpServers": {
+		"azati-gws-mcp": {
+			"command": "node",
+			"args": ["server.mjs"],
+			"cwd": ".",
+			"env": {
+				"AZATI_GWS_MCP_CLIENT": "codex-plugin"
+			},
+			"env_vars": ["CODEX_HOME"],
+			"tool_timeout_sec": 240
+		}
+	}
+}

@@ -1,0 +1,29 @@
+{
+	"name": "azati-gws-mcp",
+	"version": "0.1.0",
+	"description": "Access all current official Google Workspace MCP features through one local server.",
+	"author": {
+		"name": "Uladzislau Hlebovich",
+		"email": "uladzislau.hlebovich@azati.com",
+		"url": "https://github.com/glebowicz-azati"
+	},
+	"homepage": "https://github.com/glebowicz-azati/azati-gws-mcp",
+	"repository": "https://github.com/glebowicz-azati/azati-gws-mcp",
+	"keywords": ["google-workspace", "mcp", "full-access"],
+	"interface": {
+		"displayName": "Azati Google Workspace",
+		"shortDescription": "Full Google Workspace MCP access for Azati.",
+		"longDescription": "Read, search, create, update, send, and delete with the current official MCP tools for Azati Gmail, Drive, Calendar, Chat, People, Docs, Sheets, Slides, and Workspace search.",
+		"developerName": "Uladzislau Hlebovich",
+		"category": "Productivity",
+		"capabilities": ["Read", "Write"],
+		"websiteURL": "https://github.com/glebowicz-azati/azati-gws-mcp",
+		"defaultPrompt": [
+			"Authenticate my Azati Google Workspace.",
+			"What's new in my Google Chat?",
+			"Search my Azati Google Workspace.",
+			"Manage my Azati Google Workspace."
+		]
+	},
+	"mcpServers": "./.mcp.json"
+}

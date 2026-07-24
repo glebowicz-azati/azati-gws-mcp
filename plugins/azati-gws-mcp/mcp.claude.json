@@ -1,0 +1,11 @@
+{
+	"mcpServers": {
+		"azati-gws-mcp": {
+			"command": "node",
+			"args": ["${CLAUDE_PLUGIN_ROOT}/server.mjs"],
+			"env": {
+				"AZATI_GWS_MCP_HOME": "${CLAUDE_PLUGIN_DATA}"
+			}
+		}
+	}
+}

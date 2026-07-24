@@ -1,0 +1,26 @@
+{
+	"name": "azati-gws",
+	"owner": {
+		"name": "Uladzislau Hlebovich",
+		"email": "uladzislau.hlebovich@azati.com"
+	},
+	"description": "Azati Google Workspace plugins for Claude Code and Claude Desktop.",
+	"plugins": [
+		{
+			"name": "azati-gws-mcp",
+			"displayName": "Azati Google Workspace",
+			"source": "./plugins/azati-gws-mcp",
+			"description": "Access all current official Google Workspace MCP features through one local server.",
+			"version": "0.1.0",
+			"author": {
+				"name": "Uladzislau Hlebovich",
+				"email": "uladzislau.hlebovich@azati.com",
+				"url": "https://github.com/glebowicz-azati"
+			},
+			"homepage": "https://github.com/glebowicz-azati/azati-gws-mcp",
+			"repository": "https://github.com/glebowicz-azati/azati-gws-mcp",
+			"category": "productivity",
+			"keywords": ["google-workspace", "mcp", "full-access"]
+		}
+	]
+}

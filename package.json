@@ -1,0 +1,22 @@
+{
+	"name": "azati-gws-mcp",
+	"version": "0.1.0",
+	"description": "Google Workspace MCP for Azati with the full official tool set",
+	"author": {
+		"name": "Uladzislau Hlebovich",
+		"email": "uladzislau.hlebovich@azati.com",
+		"url": "https://github.com/glebowicz-azati"
+	},
+	"private": true,
+	"type": "module",
+	"bin": {
+		"azati-gws-mcp": "plugins/azati-gws-mcp/server.mjs"
+	},
+	"scripts": {
+		"test": "node --test"
+	},
+	"engines": {
+		"node": ">=20"
+	},
+	"license": "MIT"
+}

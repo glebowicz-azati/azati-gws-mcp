@@ -1,0 +1,20 @@
+{
+	"name": "azati-gws",
+	"interface": {
+		"displayName": "Azati Google Workspace"
+	},
+	"plugins": [
+		{
+			"name": "azati-gws-mcp",
+			"source": {
+				"source": "local",
+				"path": "./plugins/azati-gws-mcp"
+			},
+			"policy": {
+				"installation": "AVAILABLE",
+				"authentication": "ON_USE"
+			},
+			"category": "Productivity"
+		}
+	]
+}
