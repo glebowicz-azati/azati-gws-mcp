@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, stat } from "node:fs/promises";
+import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
@@ -12,19 +12,23 @@ import {
 	WORKSPACE_TOOLS,
 	SCOPES,
 	SERVICES,
+	TOOLS_CACHE_TTL_MS,
 	allowedTool,
 	authFilePath,
 	authenticateProfile,
 	callTool,
 	configDirectory,
+	createToolsCache,
 	createPkce,
 	handleMessage,
 	listTools,
 	loadToken,
+	loadToolsCache,
 	parseRemoteResponse,
 	runAuth,
 	runStdio,
 	saveToken,
+	toolsCacheFilePath,
 	verifyAzatiUser,
 } from "../plugins/azati-gws-mcp/server.mjs";
 
@@ -268,6 +272,186 @@ test("rejects malformed and non-Azati saved tokens", async () => {
 		path,
 	);
 	await assert.rejects(loadToken(path), /invalid format/);
+});
+
+test("tool metadata cache uses persistent plugin data", () => {
+	assert.equal(
+		toolsCacheFilePath(
+			"darwin",
+			{
+				AZATI_GWS_MCP_HOME:
+					"/Users/alice/.claude-azati/plugins/data/azati-gws-mcp-azati-gws",
+			},
+			"/Users/alice",
+		),
+		"/Users/alice/.claude-azati/plugins/data/azati-gws-mcp-azati-gws/tools-cache.json",
+	);
+	assert.equal(
+		toolsCacheFilePath(
+			"win32",
+			{
+				AZATI_GWS_MCP_CLIENT: "codex-plugin",
+				CODEX_HOME: "C:\\Users\\alice\\.codex-azati",
+			},
+			"C:\\Users\\alice",
+		),
+		"C:\\Users\\alice\\.codex-azati\\plugins\\data\\azati-gws-mcp-azati-gws\\tools-cache.json",
+	);
+	assert.equal(TOOLS_CACHE_TTL_MS, 24 * 60 * 60 * 1000);
+});
+
+test("persists and reuses complete allowlisted tool metadata", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "azati-mcp-tools-cache-"));
+	const path = join(directory, "nested", "tools-cache.json");
+	const timestamp = Date.parse("2026-07-27T12:00:00.000Z");
+	let requests = 0;
+	const listRemoteTools = async (serviceName, authenticated) => {
+		requests += 1;
+		assert.equal(authenticated, false);
+		return [
+			...SERVICES[serviceName].tools.map((name) => ({
+				name,
+				description: `${serviceName} ${name}`,
+				inputSchema: { type: "object", properties: {} },
+				outputSchema: {
+					type: "object",
+					properties: { result: { type: "string" } },
+				},
+				annotations: { readOnlyHint: true },
+			})),
+			{
+				name: "unknown_future_tool",
+				inputSchema: { type: "object" },
+				outputSchema: { type: "object" },
+			},
+		];
+	};
+
+	const firstCache = createToolsCache({
+		path,
+		now: () => timestamp,
+	});
+	const first = await listTools(listRemoteTools, firstCache);
+	assert.equal(first.length, 49);
+	assert.equal(requests, Object.keys(SERVICES).length);
+	const chatSearch = first.find(
+		(tool) => tool.name === "chat_search_conversations",
+	);
+	assert.deepEqual(chatSearch.outputSchema, {
+		type: "object",
+		properties: { result: { type: "string" } },
+	});
+	assert.equal(
+		first.some((tool) => tool.name.includes("unknown_future_tool")),
+		false,
+	);
+
+	const stored = await loadToolsCache(path);
+	assert.equal(stored.services.chat.tools[0].name, "list_messages");
+	assert.ok(stored.services.chat.tools[0].outputSchema);
+	assert.equal(
+		stored.services.chat.tools.some(
+			(tool) => tool.name === "unknown_future_tool",
+		),
+		false,
+	);
+	if (process.platform !== "win32") {
+		assert.equal((await stat(path)).mode & 0o777, 0o600);
+		assert.equal((await stat(join(directory, "nested"))).mode & 0o777, 0o700);
+	}
+
+	const memoryHit = await listTools(
+		async () => {
+			throw new Error("memory cache should avoid Google");
+		},
+		firstCache,
+	);
+	assert.deepEqual(memoryHit, first);
+
+	const secondCache = createToolsCache({
+		path,
+		now: () => timestamp + 60_000,
+	});
+	const second = await listTools(
+		async () => {
+			throw new Error("fresh cache should avoid Google");
+		},
+		secondCache,
+	);
+	assert.deepEqual(second, first);
+});
+
+test("refreshes expired tool metadata and falls back to stale entries", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "azati-mcp-tools-stale-"));
+	const path = join(directory, "tools-cache.json");
+	let now = Date.parse("2026-07-27T12:00:00.000Z");
+	const cache = createToolsCache({
+		path,
+		ttlMs: 1_000,
+		now: () => now,
+	});
+	const definitions = (serviceName) =>
+		SERVICES[serviceName].tools.map((name) => ({
+			name,
+			description: `cached ${serviceName} ${name}`,
+			inputSchema: { type: "object" },
+			outputSchema: { type: "object" },
+		}));
+
+	await listTools(async (serviceName) => definitions(serviceName), cache);
+	now += 2_000;
+	let refreshes = 0;
+	const stale = await listTools(async () => {
+		refreshes += 1;
+		throw new Error("temporary Google outage");
+	}, cache);
+	assert.equal(refreshes, Object.keys(SERVICES).length);
+	assert.equal(stale.length, 49);
+	assert.match(
+		stale.find((tool) => tool.name === "chat_search_messages").description,
+		/^cached chat/,
+	);
+
+	const refreshed = await listTools(async (serviceName) => {
+		refreshes += 1;
+		return definitions(serviceName).map((tool) => ({
+			...tool,
+			description: `refreshed ${serviceName} ${tool.name}`,
+		}));
+	}, cache);
+	assert.equal(refreshes, Object.keys(SERVICES).length * 2);
+	assert.match(
+		refreshed.find((tool) => tool.name === "chat_search_messages").description,
+		/^refreshed chat/,
+	);
+});
+
+test("ignores malformed or incompatible tool metadata caches", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "azati-mcp-tools-invalid-"));
+	const path = join(directory, "tools-cache.json");
+	for (const contents of [
+		"{not-json",
+		JSON.stringify({
+			version: 999,
+			pluginVersion: "0.1.0",
+			protocolVersion: "2025-06-18",
+			services: {},
+		}),
+	]) {
+		await writeFile(path, contents, "utf8");
+		const cache = createToolsCache({ path });
+		let requests = 0;
+		const tools = await listTools(async (serviceName) => {
+			requests += 1;
+			return SERVICES[serviceName].tools.map((name) => ({
+				name,
+				inputSchema: { type: "object" },
+				outputSchema: { type: "object" },
+			}));
+		}, cache);
+		assert.equal(requests, Object.keys(SERVICES).length);
+		assert.equal(tools.length, 49);
+	}
 });
 
 test("PKCE challenge is SHA-256 of a high-entropy verifier", () => {
@@ -566,6 +750,33 @@ test("handles MCP initialize, ping, and unknown methods", async () => {
 	);
 });
 
+test("model guidance makes authentication explicit and error-driven", () => {
+	assert.match(SERVER_INSTRUCTIONS, /Always call the requested Workspace tool first/);
+	assert.match(SERVER_INSTRUCTIONS, /Never call authenticate proactively/);
+	assert.match(
+		SERVER_INSTRUCTIONS,
+		/Only if the requested Workspace tool returns "Azati Google Workspace authentication is required"/,
+	);
+	assert.match(
+		SERVER_INSTRUCTIONS,
+		/A successful Workspace tool call means authentication is already valid and must not be mentioned/,
+	);
+	assert.match(
+		SERVER_INSTRUCTIONS,
+		/If the user explicitly asks to authenticate, call authenticate without first provoking an error/,
+	);
+
+	assert.match(AUTHENTICATE_TOOL.description, /Never call it proactively/);
+	assert.match(
+		AUTHENTICATE_TOOL.description,
+		/reuses valid saved credentials without opening a browser/,
+	);
+	assert.match(
+		AUTHENTICATE_TOOL.description,
+		/opens Google OAuth only when credentials are missing, rejected, or revoked/,
+	);
+});
+
 test("tool discovery is anonymous and exposes authentication plus all 48 tools", async () => {
 	const calls = [];
 	const tools = await listTools(async (serviceName, authenticated) => {
@@ -587,6 +798,64 @@ test("tool discovery is anonymous and exposes authentication plus all 48 tools",
 		Object.keys(SERVICES).sort(),
 	);
 	assert.ok(calls.every((call) => call.authenticated === false));
+});
+
+test("Workspace calls initialize the service without fetching tools/list again", async () => {
+	const sequence = [];
+	const result = await callTool(
+		"chat_search_conversations",
+		{ pageSize: 50 },
+		{
+			requireAuthenticated: async () => {
+				sequence.push("authenticate");
+			},
+			ensureSession: async (serviceName) => {
+				sequence.push(`initialize:${serviceName}`);
+			},
+			postRemote: async (serviceName, payload) => {
+				sequence.push(`${payload.method}:${serviceName}`);
+				return {
+					jsonrpc: "2.0",
+					id: payload.id,
+					result: { content: [{ type: "text", text: "ok" }] },
+				};
+			},
+		},
+	);
+
+	assert.deepEqual(sequence, [
+		"authenticate",
+		"initialize:chat",
+		"tools/call:chat",
+	]);
+	assert.deepEqual(result, {
+		content: [{ type: "text", text: "ok" }],
+	});
+	assert.equal(sequence.some((entry) => entry.includes("tools/list")), false);
+});
+
+test("unknown remote tools invalidate only their service metadata", async () => {
+	const invalidated = [];
+	await assert.rejects(
+		callTool(
+			"chat_search_conversations",
+			{},
+			{
+				requireAuthenticated: async () => {},
+				ensureSession: async () => {},
+				postRemote: async () => ({
+					jsonrpc: "2.0",
+					id: 1,
+					error: { code: -32601, message: "Unknown tool" },
+				}),
+				invalidateTools: async (serviceName) => {
+					invalidated.push(serviceName);
+				},
+			},
+		),
+		/Unknown tool/,
+	);
+	assert.deepEqual(invalidated, ["chat"]);
 });
 
 test("authentication tool keeps stdout as JSON-RPC and returns the verified account", async () => {

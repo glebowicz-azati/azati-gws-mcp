@@ -135,18 +135,22 @@ export const WORKSPACE_TOOLS = Object.freeze(
 );
 
 const TOKEN_VERSION = 1;
+const TOOLS_CACHE_VERSION = 1;
+const SERVER_VERSION = "0.1.0";
 const PROTOCOL_VERSION = "2025-06-18";
+export const TOOLS_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const TOOLS_CACHE_MAX_BYTES = 5 * 1024 * 1024;
 const OAUTH_TIMEOUT_MS = 3 * 60 * 1000;
 const CODEX_PLUGIN_DATA_DIRECTORY = "azati-gws-mcp-azati-gws";
 const AUTHENTICATION_REQUIRED =
 	"Azati Google Workspace authentication is required. Ask the user to approve the authenticate tool; do not use gcloud or another login method.";
 export const SERVER_INSTRUCTIONS =
-	"When attached, treat unqualified mentions of Gmail or email, Google Drive or files, Calendar or meetings, Google Chat or chats, Contacts or people, Docs, Sheets, Slides, or Google Workspace as requests about the user's Azati account. Use these MCP tools without asking whether the user means public Google product information. Only use web or general knowledge when explicitly asked about public news, product documentation, or Google itself. For \"what's new in Google Chat,\" search the user's recent Azati Chat conversations and messages and summarize them. If authentication is required, ask the user to approve the authenticate tool; never use gcloud or another login method. Clarify only when missing details could change a write, send, or delete action.";
+	"When attached, treat unqualified mentions of Gmail or email, Google Drive or files, Calendar or meetings, Google Chat or chats, Contacts or people, Docs, Sheets, Slides, or Google Workspace as requests about the user's Azati account. Use these MCP tools without asking whether the user means public Google product information. Only use web or general knowledge when explicitly asked about public news, product documentation, or Google itself. For \"what's new in Google Chat,\" search the user's recent Azati Chat conversations and messages and summarize them. Always call the requested Workspace tool first. Never call authenticate proactively or merely because a Google Workspace tool will be used. Only if the requested Workspace tool returns \"Azati Google Workspace authentication is required\" should you ask the user to approve authenticate. A successful Workspace tool call means authentication is already valid and must not be mentioned. If the user explicitly asks to authenticate, call authenticate without first provoking an error. Authenticate reuses valid saved credentials and opens Google OAuth only when credentials are missing, rejected, or revoked. Never use gcloud or another login method. Clarify only when missing details could change a write, send, or delete action.";
 export const AUTHENTICATE_TOOL = Object.freeze({
 	name: "authenticate",
 	title: "Authenticate Azati Google Workspace",
 	description:
-		"Sign in to the user's @azati.com Google Workspace account. Call this only after the user asks to authenticate or approves authentication. This directly opens Google OAuth and never uses gcloud.",
+		"Validate or establish access to the user's @azati.com Google Workspace account. Call this only when the user explicitly asks to authenticate, or after a requested Workspace tool returns \"Azati Google Workspace authentication is required\" and the user approves authentication. Never call it proactively or merely because a Workspace tool will be used. It reuses valid saved credentials without opening a browser and opens Google OAuth only when credentials are missing, rejected, or revoked. Never use gcloud.",
 	inputSchema: {
 		type: "object",
 		properties: {},
@@ -161,6 +165,7 @@ export const AUTHENTICATE_TOOL = Object.freeze({
 });
 const sessionIds = new Map();
 const remoteProtocolVersions = new Map();
+const persistentToolsCaches = new Map();
 let nextRemoteId = 1;
 let memoryAccessToken = null;
 let memoryAccessTokenExpiresAt = 0;
@@ -227,6 +232,17 @@ export function authFilePath(
 		: posixPath.join(path, "auth.json");
 }
 
+export function toolsCacheFilePath(
+	platform = process.platform,
+	env = process.env,
+	home = homedir(),
+) {
+	const path = configDirectory(platform, env, home);
+	return platform === "win32"
+		? win32Path.join(path, "tools-cache.json")
+		: posixPath.join(path, "tools-cache.json");
+}
+
 function parseSavedToken(contents) {
 	const token = JSON.parse(contents);
 	if (
@@ -272,6 +288,160 @@ export async function saveToken(token, path = authFilePath()) {
 	});
 	await rename(temporary, path);
 	if (process.platform !== "win32") await chmod(path, 0o600);
+}
+
+function validToolDefinition(tool) {
+	return (
+		tool !== null &&
+		typeof tool === "object" &&
+		typeof tool.name === "string" &&
+		tool.inputSchema !== null &&
+		typeof tool.inputSchema === "object"
+	);
+}
+
+function parseToolsCache(contents) {
+	if (Buffer.byteLength(contents) > TOOLS_CACHE_MAX_BYTES) return null;
+	const parsed = JSON.parse(contents);
+	if (
+		parsed?.version !== TOOLS_CACHE_VERSION ||
+		parsed?.pluginVersion !== SERVER_VERSION ||
+		parsed?.protocolVersion !== PROTOCOL_VERSION ||
+		parsed?.services === null ||
+		typeof parsed?.services !== "object"
+	) {
+		return null;
+	}
+
+	const services = {};
+	for (const [serviceName, entry] of Object.entries(parsed.services)) {
+		if (
+			!SERVICES[serviceName] ||
+			typeof entry?.fetchedAt !== "string" ||
+			!Number.isFinite(Date.parse(entry.fetchedAt)) ||
+			!Array.isArray(entry.tools)
+		) {
+			continue;
+		}
+		services[serviceName] = {
+			fetchedAt: entry.fetchedAt,
+			tools: entry.tools
+				.filter(validToolDefinition)
+				.filter((tool) => allowedTool(serviceName, tool)),
+		};
+	}
+
+	return {
+		version: TOOLS_CACHE_VERSION,
+		pluginVersion: SERVER_VERSION,
+		protocolVersion: PROTOCOL_VERSION,
+		services,
+	};
+}
+
+export async function loadToolsCache(path = toolsCacheFilePath()) {
+	try {
+		return parseToolsCache(await readFile(path, "utf8"));
+	} catch {
+		return null;
+	}
+}
+
+export async function saveToolsCache(cache, path = toolsCacheFilePath()) {
+	const directory = dirname(path);
+	await mkdir(directory, { recursive: true, mode: 0o700 });
+	if (process.platform !== "win32") await chmod(directory, 0o700);
+
+	const temporary = `${path}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
+	await writeFile(temporary, `${JSON.stringify(cache, null, 2)}\n`, {
+		encoding: "utf8",
+		mode: 0o600,
+		flag: "wx",
+	});
+	await rename(temporary, path);
+	if (process.platform !== "win32") await chmod(path, 0o600);
+}
+
+export function createToolsCache({
+	path = toolsCacheFilePath(),
+	ttlMs = TOOLS_CACHE_TTL_MS,
+	now = () => Date.now(),
+	loadCache = loadToolsCache,
+	saveCache = saveToolsCache,
+} = {}) {
+	let statePromise;
+	let writePromise = Promise.resolve();
+
+	async function state() {
+		if (!statePromise) {
+			statePromise = (async () =>
+				(await loadCache(path)) || {
+					version: TOOLS_CACHE_VERSION,
+					pluginVersion: SERVER_VERSION,
+					protocolVersion: PROTOCOL_VERSION,
+					services: {},
+				})();
+		}
+		return statePromise;
+	}
+
+	function persist(cache) {
+		const snapshot = {
+			...cache,
+			services: Object.fromEntries(
+				Object.entries(cache.services).map(([serviceName, entry]) => [
+					serviceName,
+					{ ...entry, tools: [...entry.tools] },
+				]),
+			),
+		};
+		writePromise = writePromise
+			.catch(() => {})
+			.then(() => saveCache(snapshot, path));
+		return writePromise;
+	}
+
+	return Object.freeze({
+		async get(serviceName) {
+			const entry = (await state()).services[serviceName];
+			if (!entry) return null;
+			const age = now() - Date.parse(entry.fetchedAt);
+			return {
+				tools: entry.tools,
+				fresh: age >= 0 && age <= ttlMs,
+			};
+		},
+		async update(updates) {
+			const cache = await state();
+			const fetchedAt = new Date(now()).toISOString();
+			for (const [serviceName, tools] of Object.entries(updates)) {
+				if (!SERVICES[serviceName] || !Array.isArray(tools)) continue;
+				cache.services[serviceName] = {
+					fetchedAt,
+					tools: tools
+						.filter(validToolDefinition)
+						.filter((tool) => allowedTool(serviceName, tool)),
+				};
+			}
+			await persist(cache);
+		},
+		async invalidate(serviceName) {
+			const cache = await state();
+			if (!Object.hasOwn(cache.services, serviceName)) return;
+			delete cache.services[serviceName];
+			await persist(cache);
+		},
+	});
+}
+
+function defaultToolsCache() {
+	const path = toolsCacheFilePath();
+	let cache = persistentToolsCaches.get(path);
+	if (!cache) {
+		cache = createToolsCache({ path });
+		persistentToolsCaches.set(path, cache);
+	}
+	return cache;
 }
 
 function clientId() {
@@ -587,11 +757,11 @@ async function ensureRemoteSession(serviceName, authenticated = true) {
 			jsonrpc: "2.0",
 			id,
 			method: "initialize",
-			params: {
-				protocolVersion: PROTOCOL_VERSION,
-				capabilities: {},
-				clientInfo: { name: "azati-gws-mcp", version: "1.0.0" },
-			},
+				params: {
+					protocolVersion: PROTOCOL_VERSION,
+					capabilities: {},
+					clientInfo: { name: "azati-gws-mcp", version: SERVER_VERSION },
+				},
 		},
 		{ authenticated },
 	);
@@ -638,21 +808,63 @@ export function allowedTool(serviceName, tool) {
 	return SERVICES[serviceName]?.tools.includes(tool.name) === true;
 }
 
-export async function listTools(listRemoteTools = remoteTools) {
-	const listed = await Promise.allSettled(
-		Object.keys(SERVICES).map(async (serviceName) =>
-			(await listRemoteTools(serviceName, false))
-				.filter((tool) => allowedTool(serviceName, tool))
-				.map((tool) => ({
-					...tool,
-					name: `${serviceName}_${tool.name}`,
-				})),
+export async function listTools(
+	listRemoteTools = remoteTools,
+	toolsCache = listRemoteTools === remoteTools ? defaultToolsCache() : null,
+) {
+	const serviceNames = Object.keys(SERVICES);
+	const cached = new Map(
+		await Promise.all(
+			serviceNames.map(async (serviceName) => [
+				serviceName,
+				toolsCache ? await toolsCache.get(serviceName) : null,
+			]),
 		),
 	);
+	const listed = await Promise.allSettled(
+		serviceNames.map(async (serviceName) => {
+			const cachedService = cached.get(serviceName);
+			if (cachedService?.fresh) {
+				return { serviceName, tools: cachedService.tools, refreshed: false };
+			}
+			try {
+				const tools = (await listRemoteTools(serviceName, false))
+					.filter(validToolDefinition)
+					.filter((tool) => allowedTool(serviceName, tool));
+				return { serviceName, tools, refreshed: true };
+			} catch (error) {
+				if (cachedService) {
+					return {
+						serviceName,
+						tools: cachedService.tools,
+						refreshed: false,
+					};
+				}
+				throw error;
+			}
+		}),
+	);
+	if (toolsCache) {
+		const updates = Object.fromEntries(
+			listed.flatMap((result) =>
+				result.status === "fulfilled" && result.value.refreshed
+					? [[result.value.serviceName, result.value.tools]]
+					: [],
+			),
+		);
+		if (Object.keys(updates).length > 0) {
+			await toolsCache.update(updates).catch(() => {});
+		}
+	}
 	return [
 		AUTHENTICATE_TOOL,
 		...listed.flatMap((result) =>
-			result.status === "fulfilled" ? result.value : [],
+			result.status === "fulfilled"
+				? result.value.tools.map((tool) => ({
+						...tool,
+						name: `${result.value.serviceName}_${tool.name}`,
+					}))
+				: [],
 		),
 	];
 }
@@ -681,7 +893,14 @@ async function requireAuthentication() {
 export async function callTool(
 	name,
 	args = {},
-	{ authenticateUser = authenticateProfile } = {},
+	{
+		authenticateUser = authenticateProfile,
+		requireAuthenticated = requireAuthentication,
+		ensureSession = ensureRemoteSession,
+		postRemote = remotePost,
+		invalidateTools = (serviceName) =>
+			defaultToolsCache().invalidate(serviceName),
+	} = {},
 ) {
 	if (name === AUTHENTICATE_TOOL.name) {
 		const email = await authenticateUser();
@@ -693,26 +912,26 @@ export async function callTool(
 
 	const target = resolveLocalTool(name);
 	if (!target) throw new Error(`Unknown or disallowed tool: ${name}`);
-	await requireAuthentication();
-
-	// Fetch the current remote declaration on every call. This fails closed if
-	// Google removes or renames an explicitly supported tool.
-	const current = (await remoteTools(target.serviceName)).find(
-		(tool) => tool.name === target.remoteName,
-	);
-	if (!current || !allowedTool(target.serviceName, current)) {
-		throw new Error(`Google no longer advertises ${name}.`);
-	}
+	await requireAuthenticated();
+	await ensureSession(target.serviceName);
 
 	const id = nextRemoteId++;
-	const response = await remotePost(target.serviceName, {
+	const response = await postRemote(target.serviceName, {
 		jsonrpc: "2.0",
 		id,
 		method: "tools/call",
 		params: { name: target.remoteName, arguments: args },
 	});
-	if (response?.error)
-		throw new Error(response.error.message || `${name} failed.`);
+	if (response?.error) {
+		const message = response.error.message || `${name} failed.`;
+		if (
+			response.error.code === -32601 ||
+			/\b(?:unknown|removed) tool\b|tool\b.*\bnot found\b/i.test(message)
+		) {
+			await invalidateTools(target.serviceName).catch(() => {});
+		}
+		throw new Error(message);
+	}
 	if (!response || !Object.hasOwn(response, "result")) {
 		throw new Error(`Google returned an invalid response for ${name}.`);
 	}
@@ -731,7 +950,7 @@ export async function handleMessage(message, context = {}) {
 				result: {
 					protocolVersion: PROTOCOL_VERSION,
 					capabilities: { tools: { listChanged: false } },
-					serverInfo: { name: "azati-gws-mcp", version: "0.1.0" },
+					serverInfo: { name: "azati-gws-mcp", version: SERVER_VERSION },
 					instructions: SERVER_INSTRUCTIONS,
 				},
 			};

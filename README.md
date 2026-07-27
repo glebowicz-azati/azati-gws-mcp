@@ -134,6 +134,20 @@ out. Claude and Codex use separate files and may require separate sign-ins.
 On macOS and Linux, the server creates the authentication directory with
 permission `0700` and `auth.json` with permission `0600`.
 
+## Tool metadata cache
+
+The plugin caches Google's MCP tool definitions in memory and in
+`tools-cache.json` beside `auth.json`. The persistent cache keeps the complete
+allowlisted definitions, including output schemas, for up to 24 hours so a new
+plugin process does not need to fetch the same catalog again. It contains tool
+metadata only—never Google Workspace messages, email, files, events, or other
+user content.
+
+Delete `tools-cache.json` at any time to force a fresh catalog download. Missing,
+expired, incompatible, or malformed service entries are fetched again. If a
+refresh temporarily fails, the plugin can use the stale metadata for discovery;
+actual Workspace operations still go to Google.
+
 ## Development
 
 The runtime uses Node.js built-ins. No dependency installation is required.
