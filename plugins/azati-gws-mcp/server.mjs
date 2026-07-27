@@ -136,7 +136,7 @@ export const WORKSPACE_TOOLS = Object.freeze(
 
 const TOKEN_VERSION = 1;
 const TOOLS_CACHE_VERSION = 1;
-const SERVER_VERSION = "0.1.0";
+export const SERVER_VERSION = "0.2.0";
 const PROTOCOL_VERSION = "2025-06-18";
 export const TOOLS_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const TOOLS_CACHE_MAX_BYTES = 5 * 1024 * 1024;

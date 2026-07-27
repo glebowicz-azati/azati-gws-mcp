@@ -11,7 +11,7 @@
 			"displayName": "Azati Google Workspace",
 			"source": "./plugins/azati-gws-mcp",
 			"description": "Access all current official Google Workspace MCP features through one local server.",
-			"version": "0.1.0",
+			"version": "0.2.0",
 			"author": {
 				"name": "Uladzislau Hlebovich",
 				"email": "uladzislau.hlebovich@azati.com",
