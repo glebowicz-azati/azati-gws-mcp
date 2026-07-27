@@ -95,6 +95,90 @@ npx --yes --ignore-scripts --package "github:glebowicz-azati/azati-gws-mcp#main"
 `npx` downloads and runs the latest `main` branch. Review repository changes
 before each update.
 
+## Update
+
+Updates preserve the plugin's persistent data, including `auth.json`. You do not
+need to authenticate again unless Google has rejected or revoked the saved
+credential.
+
+### Claude Code CLI
+
+Refresh the marketplace, update the installed plugin, then restart Claude Code
+or run `/reload-plugins`:
+
+```sh
+claude-az plugin marketplace update azati-gws
+claude-az plugin update azati-gws-mcp@azati-gws
+```
+
+### Claude Desktop
+
+Open **Customize → Plugins**, refresh the **azati-gws** marketplace, update
+**Azati Google Workspace**, then start a new chat.
+
+### Codex CLI
+
+Refresh the marketplace and its installed plugin cache, then restart Codex and
+start a new session:
+
+```sh
+codex plugin marketplace upgrade azati-gws
+```
+
+### Codex Desktop
+
+Open **Plugins → Personal**, refresh the **azati-gws** marketplace, then restart
+Codex and start a new task.
+
+### npx fallback
+
+The `#main` configuration tracks the latest commit. Restart the MCP client after
+a new version is published. To pin a specific release, replace `#main` with its
+Git tag.
+
+## Uninstall
+
+### Claude Code CLI
+
+Remove the plugin and marketplace:
+
+```sh
+claude-az plugin uninstall azati-gws-mcp@azati-gws
+claude-az plugin marketplace remove azati-gws
+```
+
+The uninstall command removes the plugin's persistent data when it is no longer
+installed in another scope. Add `--keep-data` to preserve `auth.json` for a
+future reinstall.
+
+### Claude Desktop
+
+Open **Customize → Plugins**, uninstall **Azati Google Workspace**, then remove
+the **azati-gws** marketplace if you no longer need it.
+
+### Codex CLI
+
+Remove the plugin and marketplace:
+
+```sh
+codex plugin remove azati-gws-mcp@azati-gws
+codex plugin marketplace remove azati-gws
+```
+
+### Codex Desktop
+
+Open **Plugins → Personal**, uninstall **Azati Google Workspace**, then remove
+the **azati-gws** marketplace if you no longer need it.
+
+### npx fallback
+
+Remove the MCP server entry from the client configuration.
+
+Removing the Codex plugin or an `npx` configuration does not necessarily remove
+the saved Google credential. To sign out completely, delete `auth.json` and
+`tools-cache.json` from the applicable directory in
+[Authentication storage](#authentication-storage).
+
 ## Use
 
 Ask in plain English:
@@ -133,6 +217,20 @@ out. Claude and Codex use separate files and may require separate sign-ins.
 
 On macOS and Linux, the server creates the authentication directory with
 permission `0700` and `auth.json` with permission `0600`.
+
+## Tool metadata cache
+
+The plugin caches Google's MCP tool definitions in memory and in
+`tools-cache.json` beside `auth.json`. The persistent cache keeps the complete
+allowlisted definitions, including output schemas, for up to 24 hours so a new
+plugin process does not need to fetch the same catalog again. It contains tool
+metadata only—never Google Workspace messages, email, files, events, or other
+user content.
+
+Delete `tools-cache.json` at any time to force a fresh catalog download. Missing,
+expired, incompatible, or malformed service entries are fetched again. If a
+refresh temporarily fails, the plugin can use the stale metadata for discovery;
+actual Workspace operations still go to Google.
 
 ## Development
 
