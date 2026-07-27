@@ -139,7 +139,6 @@ const TOOLS_CACHE_VERSION = 1;
 export const SERVER_VERSION = "0.2.0";
 const PROTOCOL_VERSION = "2025-06-18";
 export const TOOLS_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
-const TOOLS_CACHE_MAX_BYTES = 5 * 1024 * 1024;
 const OAUTH_TIMEOUT_MS = 3 * 60 * 1000;
 const CODEX_PLUGIN_DATA_DIRECTORY = "azati-gws-mcp-azati-gws";
 const AUTHENTICATION_REQUIRED =
@@ -301,7 +300,6 @@ function validToolDefinition(tool) {
 }
 
 function parseToolsCache(contents) {
-	if (Buffer.byteLength(contents) > TOOLS_CACHE_MAX_BYTES) return null;
 	const parsed = JSON.parse(contents);
 	if (
 		parsed?.version !== TOOLS_CACHE_VERSION ||
